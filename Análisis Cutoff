@@ -355,7 +355,6 @@ LINEAS AS (
 ),
 
 ------------------------ MORAS --------------------------
-
 VFAC_SDO_CTA_MES AS (
   SELECT 
       a.CTA_CVE,
@@ -371,7 +370,7 @@ VFAC_SDO_CTA_MES AS (
     USING (CTA_CVE)
   WHERE a.TIP_INF = 230
     AND DATE(a.ANIO, a.MES, 1) >= DATE_TRUNC(FCH_INI, MONTH)
-    AND DATE(a.ANIO, a.MES, 1) >= '2026-01-01'
+    AND DATE(a.ANIO, a.MES, 1) <= '2026-01-01'
     AND a.CTA_EDO_CVE NOT IN ('T', 'P', 'Z', '8', '9')
 ),
 
@@ -479,7 +478,6 @@ CONSOLIDADO AS (
    AND b.SegmentoScore = a.SegmentoScore
    AND b.RiskLevelMinipagos = a.RiskLevelMinipagos
    AND a.LCMinipagos = b.LCMinipagos
-   AND a.ScoreRank = b.ScoreRank
 ),
 
 NUEVAS_MORAS AS (

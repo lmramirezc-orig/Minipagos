@@ -1,0 +1,532 @@
+DECLARE FCH_FIN DATE DEFAULT DATE_ADD(CURRENT_DATE('America/Mexico_City'), INTERVAL -2 DAY);
+DECLARE FCH_INI DATE DEFAULT DATE_ADD(DATE_TRUNC(FCH_FIN, YEAR), INTERVAL - 2 YEAR);
+
+WITH
+VFAC_BR_TL AS (
+  SELECT 
+    BR_SOLIC_CVE,
+    BR_TIPO,
+    BR_ORG,
+    BR_FCH_CIERRE,
+    BR_NOM_OTORG,
+    BR_CVE_OBS,
+    BR_IMP_PAG,
+    BR_SDO,
+    SAFE_CAST(BR_MOP AS NUMERIC) AS BR_MOP_N,
+    REPLACE(REPLACE(REPLACE(REPLACE(BR_HST_PG,'X','0'),'U','0'),'-','0'),'D','0') AS BR_HST_PG_C,
+    CASE 
+      WHEN BR_NOM_OTORG IN('COMUNICACIONES', 'SERVICIOS', 'ABC SERVICIOS'
+                                    ,'ADT PRIVATE','ALESTRA','AXTEL','BODESA','C A TELEFONISTAS','CABLEVISION DF','COMCEL'
+                                    ,'COORDINADORA REC','DISH','EDITORIAL','IUSACELL','JOYERIASBIZZARRO','MIXUP'
+                                    ,'MVS QRO','NEXTEL','OPTICAS DEVLYN','PEGASO','ROYAL PRESTIGE','SERV RURALES'
+                                    ,'SERVICIO MEDICO','SERVS. GRALES.','SKY TV','TELCEL CHI','TELCEL GDJ','TELCEL HER'
+                                    ,'TELCEL MER','TELCEL MTY','TELCEL PUE','TELCEL QUE','TELCELMETRO','TELMEX')
+               THEN 0 ELSE 1 END CTA_VALIDA,-- Flag cuenta valida
+  FROM crp-pro-dwh-semanticagold.EIL_DP_VDWH.VFAC_BR_TL
+  WHERE BR_ORG = 230
+  AND BR_FCH_ACT IS NOT NULL
+  AND FCH_CARGA >= FCH_FIN
+),
+
+VFAC_BR_TL_AUX AS (
+  SELECT
+    *,
+    CASE WHEN MAX_BR_HIST_PG_24M > BR_MOP_N THEN MAX_BR_HIST_PG_24M ELSE BR_MOP_N END TL_MAX_MOP_24M
+  FROM (
+    SELECT
+      *,
+           (SELECT MAX(CD) FROM UNNEST([ SAFE_CAST(SUBSTR(BR_HST_PG_C,1,1) AS NUMERIC), SAFE_CAST(SUBSTR(BR_HST_PG_C,2,1) AS NUMERIC), SAFE_CAST(SUBSTR(BR_HST_PG_C,3,1) AS NUMERIC), SAFE_CAST(SUBSTR(BR_HST_PG_C,4,1) AS NUMERIC), SAFE_CAST(SUBSTR(BR_HST_PG_C,5,1) AS NUMERIC), SAFE_CAST(SUBSTR(BR_HST_PG_C,6,1) AS NUMERIC), SAFE_CAST(SUBSTR(BR_HST_PG_C,7,1) AS NUMERIC), SAFE_CAST(SUBSTR(BR_HST_PG_C,8,1) AS NUMERIC), SAFE_CAST(SUBSTR(BR_HST_PG_C,9,1) AS NUMERIC), SAFE_CAST(SUBSTR(BR_HST_PG_C,10,1) AS NUMERIC), SAFE_CAST(SUBSTR(BR_HST_PG_C,11,1) AS NUMERIC), SAFE_CAST(SUBSTR(BR_HST_PG_C,12,1) AS NUMERIC), SAFE_CAST(SUBSTR(BR_HST_PG_C,13,1) AS NUMERIC), SAFE_CAST(SUBSTR(BR_HST_PG_C,14,1) AS NUMERIC), SAFE_CAST(SUBSTR(BR_HST_PG_C,15,1) AS NUMERIC), SAFE_CAST(SUBSTR(BR_HST_PG_C,16,1) AS NUMERIC), SAFE_CAST(SUBSTR(BR_HST_PG_C,17,1) AS NUMERIC), SAFE_CAST(SUBSTR(BR_HST_PG_C,18,1) AS NUMERIC), SAFE_CAST(SUBSTR(BR_HST_PG_C,19,1) AS NUMERIC), SAFE_CAST(SUBSTR(BR_HST_PG_C,20,1) AS NUMERIC), SAFE_CAST(SUBSTR(BR_HST_PG_C,21,1) AS NUMERIC), SAFE_CAST(SUBSTR(BR_HST_PG_C,22,1) AS NUMERIC), SAFE_CAST(SUBSTR(BR_HST_PG_C,23,1) AS NUMERIC), SAFE_CAST(SUBSTR(BR_HST_PG_C,24,1) AS NUMERIC) ]) AS CD) AS MAX_BR_HIST_PG_24M
+  FROM VFAC_BR_TL
+  )
+),
+
+VARS_TL AS (
+  SELECT
+    BR_SOLIC_CVE,
+    BR_TIPO,
+    BR_ORG,
+    SUM(CASE WHEN BR_CVE_OBS NOT IN ('CC') AND (BR_FCH_CIERRE = '1900-01-01' OR BR_FCH_CIERRE IS NULL)  THEN 1 ELSE 0 END) AS TL_NUM_CTAS_ABT,
+    SUM(CASE WHEN BR_CVE_OBS NOT IN ('CC') AND (BR_FCH_CIERRE = '1900-01-01' OR BR_FCH_CIERRE IS NULL)  THEN BR_IMP_PAG ELSE 0 END) AS TL_SUM_IMP_PAG_ABT,
+    MAX(CASE WHEN CTA_VALIDA = 1 THEN TL_MAX_MOP_24M ELSE -9999 END) AS TL_MAX_MOP_CTAS_VAL_24M,
+    SUM(CASE WHEN CTA_VALIDA=1 AND TL_MAX_MOP_24M >= 5 THEN BR_SDO ELSE 0 END) AS TL_SDO_MOP5_CTAS_VAL_24M
+  FROM VFAC_BR_TL_AUX
+  GROUP BY 1,2,3
+),
+
+VFAC_APIS AS (
+  SELECT
+    *
+  FROM(
+    SELECT
+      BR_SOLIC_CVE,
+      BR_TIPO,
+      BR_ORG,
+      BR_STATUS,
+      BR_DOWNSELL,
+      BR_HIT,
+      ROW_NUMBER() OVER(PARTITION BY BR_SOLIC_CVE,BR_TIPO,BR_ORG ORDER BY CASE WHEN BR_STATUS IN('A','T') THEN 3 WHEN BR_STATUS='D' THEN 2 ELSE 1 END DESC) AS rn
+    FROM crp-pro-dwh-semanticagold.EIL_DP_VDWH.VFAC_APIS
+    WHERE BR_ORG = 230
+    AND FCH_CARGA >= FCH_INI
+  )
+  WHERE rn=1
+),
+
+SOLICITUDES AS (
+  SELECT
+    *,
+    NTILE(20) OVER (PARTITION BY BR_HIT_DES, SegmentoScore ORDER BY SCORE_TD) AS ScoreRank
+  FROM (
+    SELECT
+      a.BR_SOLIC_CVE,
+      a.BR_TIPO,
+      a.BR_ORG,
+      a.BR_STATUS,
+      a.BR_DOWNSELL,
+      b.BR_ING_TOT,
+      b.BR_FCH_APE,
+      b.BR_TDA_CAP,
+      a.BR_HIT,
+      c.SegmentoScore,
+      c.BR_SCORE_FIN AS SCORE_TD,
+      d.CAUSA_RECHAZO,
+      d.BR_DICTAMEN_DES,
+      d.BR_IMP_LIM_CRED_APROB,
+      CASE 
+        WHEN a.BR_TIPO IN (1011,1021,1001,1031) THEN 'X-SELL'
+        WHEN a.BR_ORG=200 AND BR_HIT IN('1','YH') AND c.SegmentoScore IN (11,13,36) THEN 'PURO'
+        WHEN a.BR_ORG=200 AND BR_HIT IN('1','YH') THEN 'DOBLE'
+        WHEN a.BR_ORG=200 AND BR_HIT IN('0','2','NH') THEN 'NOHIT & THINFILE'
+        WHEN a.BR_ORG=210 AND BR_HIT IN('1','YH') AND c.SegmentoScore=21 THEN 'NTR'
+        WHEN BR_HIT IN('1','YH') THEN 'HIT'
+        WHEN BR_HIT = '0' THEN 'THIN FILE'
+        WHEN BR_HIT IN('2','NH') THEN 'NOHIT'
+        ELSE 'SIN HIT' 
+      END BR_HIT_DES,
+      EXTRACT(YEAR FROM BR_FCH_APE) AS ANIO,
+      EXTRACT(MONTH FROM BR_FCH_APE) AS MES,
+      DATE_TRUNC(BR_FCH_APE, MONTH) AS DT_FEC_SOL,
+      IF(a.BR_STATUS IN ('A','T'),'',CAUSA_RECHAZO) AS CAUSA_RECHAZO,
+      IF(a.BR_STATUS IN ('A','T'),'',BR_DICTAMEN_DES) AS BR_DICTAMEN_DES,
+      IF(a.BR_STATUS IN ('A','T'),'',BR_REGLA_DES) AS BR_REGLA_DES,
+      IF(BR_DOWNSELL IN (1,2), 'Downsell', 'BAU') AS TRAMITE,
+      IF(a.BR_STATUS IN ('A','T'),1,0) AS ST_APROB,
+      CASE
+        WHEN a.BR_ORG=200 THEN 'VISA'
+        WHEN a.BR_ORG=210 THEN 'Departamental'
+        WHEN a.BR_ORG=230 THEN 'Minipagos'
+      END AS PRODUCTO,
+      IF(BR_TDA_CAP='0782','SEL','TDA') AS CANAL,
+      CASE 
+        WHEN e.TL_NUM_CTAS_ABT>0 AND b.BR_ING_TOT>0 THEN e.TL_SUM_IMP_PAG_ABT/b.BR_ING_TOT
+        ELSE 0 
+      END AS PTI,
+      f.CTA_CVE,
+      IF(e.TL_MAX_MOP_CTAS_VAL_24M >= 5 AND TL_SDO_MOP5_CTAS_VAL_24M>=10000, 1, 0) AS TL_SDO_MOP5_CTAS_VAL_24M
+    FROM VFAC_APIS a
+    LEFT JOIN `crp-pro-dwh-semanticagold.EIL_DP_VDWH.VFAC_APIA` b
+    USING(BR_SOLIC_CVE)
+    LEFT JOIN `crp-pro-dwh-semanticagold.EIL_DP_VDWH.VFAC_OMDM_SOLICITUD` c
+    ON a.BR_SOLIC_CVE=c.BR_SOLIC_CVE AND a.BR_TIPO=c.BR_TIPO
+    LEFT JOIN crp-pro-dwh-semanticagold.EIL_DP_VMASTER.VFAC_NEGFIN_SOLICITUDES d
+    ON a.BR_SOLIC_CVE=d.BR_SOLIC_CVE AND a.BR_TIPO=d.BR_TIPO
+    LEFT JOIN VARS_TL e
+    ON a.BR_SOLIC_CVE = e.BR_SOLIC_CVE
+    AND a.BR_TIPO = e.BR_TIPO
+    LEFT JOIN `crp-pro-dwh-semanticagold.EIL_DP_VDWH.VDIM_CTA` f
+    ON a.BR_SOLIC_CVE = f.BR_SOLIC_CVE
+    AND CAST(SUBSTR(CAST(a.BR_TIPO AS STRING),1,3) AS NUMERIC)=f.BR_TIPO
+    WHERE b.BR_FCH_APE BETWEEN FCH_INI AND FCH_FIN
+  )
+),
+
+NIVEL_RIESGO AS (
+  SELECT
+    *,
+    CASE 
+      WHEN BR_HIT_DES = 'HIT' AND SegmentoScore = 21 AND SCORE_TD BETWEEN 0   AND 193  THEN 5       
+      WHEN BR_HIT_DES = 'HIT' AND SegmentoScore = 21 AND SCORE_TD BETWEEN 194 AND 216  THEN 4           
+      WHEN BR_HIT_DES = 'HIT' AND SegmentoScore = 21 AND SCORE_TD BETWEEN 217 AND 1000  THEN 3             
+
+      WHEN BR_HIT_DES = 'HIT' AND SegmentoScore = 22 AND SCORE_TD BETWEEN 0   AND 202  THEN 5             
+      WHEN BR_HIT_DES = 'HIT' AND SegmentoScore = 22 AND SCORE_TD BETWEEN 203 AND 220  THEN 4                 
+      WHEN BR_HIT_DES = 'HIT' AND SegmentoScore = 22 AND SCORE_TD BETWEEN 221 AND 256  THEN 3                  
+      WHEN BR_HIT_DES = 'HIT' AND SegmentoScore = 22 AND SCORE_TD BETWEEN 257 AND 284  THEN 2                   
+      WHEN BR_HIT_DES = 'HIT' AND SegmentoScore = 22 AND SCORE_TD BETWEEN 285 AND 1000 THEN 1              
+
+      WHEN BR_HIT_DES = 'HIT' AND SegmentoScore = 23 AND SCORE_TD BETWEEN 0   AND 198  THEN 5       
+      WHEN BR_HIT_DES = 'HIT' AND SegmentoScore = 23 AND SCORE_TD BETWEEN 199 AND 223  THEN 4           
+      WHEN BR_HIT_DES = 'HIT' AND SegmentoScore = 23 AND SCORE_TD BETWEEN 224 AND 259  THEN 3            
+      WHEN BR_HIT_DES = 'HIT' AND SegmentoScore = 23 AND SCORE_TD BETWEEN 260 AND 1000 THEN 2                   
+
+      WHEN BR_HIT_DES = 'HIT' AND SegmentoScore = 24 AND SCORE_TD BETWEEN 0   AND 221  THEN 5     
+      WHEN BR_HIT_DES = 'HIT' AND SegmentoScore = 24 AND SCORE_TD BETWEEN 222 AND 232  THEN 4          
+      WHEN BR_HIT_DES = 'HIT' AND SegmentoScore = 24 AND SCORE_TD BETWEEN 233 AND 1000 THEN 3               
+
+      WHEN BR_HIT_DES = 'THIN FILE' AND SegmentoScore = 21 AND SCORE_TD BETWEEN 0   AND 216  THEN 5       
+      WHEN BR_HIT_DES = 'THIN FILE' AND SegmentoScore = 21 AND SCORE_TD BETWEEN 217 AND 227  THEN 4           
+      WHEN BR_HIT_DES = 'THIN FILE' AND SegmentoScore = 21 AND SCORE_TD BETWEEN 228 AND 1000 THEN 3               
+
+      WHEN BR_HIT_DES = 'THIN FILE' AND SegmentoScore = 22 AND SCORE_TD BETWEEN 0   AND 210  THEN 5             
+      WHEN BR_HIT_DES = 'THIN FILE' AND SegmentoScore = 22 AND SCORE_TD BETWEEN 211 AND 233  THEN 4                 
+      WHEN BR_HIT_DES = 'THIN FILE' AND SegmentoScore = 22 AND SCORE_TD BETWEEN 234 AND 248  THEN 3                  
+      WHEN BR_HIT_DES = 'THIN FILE' AND SegmentoScore = 22 AND SCORE_TD BETWEEN 249 AND 1000 THEN 2         
+
+      WHEN BR_HIT_DES = 'THIN FILE' AND SegmentoScore = 23 AND SCORE_TD BETWEEN 0   AND 194  THEN 5       
+      WHEN BR_HIT_DES = 'THIN FILE' AND SegmentoScore = 23 AND SCORE_TD BETWEEN 195 AND 214  THEN 4           
+      WHEN BR_HIT_DES = 'THIN FILE' AND SegmentoScore = 23 AND SCORE_TD BETWEEN 215 AND 253  THEN 3            
+      WHEN BR_HIT_DES = 'THIN FILE' AND SegmentoScore = 23 AND SCORE_TD BETWEEN 254 AND 1000 THEN 2               
+
+      WHEN BR_HIT_DES = 'THIN FILE' AND SegmentoScore = 24 AND SCORE_TD BETWEEN 0   AND 227  THEN 5     
+      WHEN BR_HIT_DES = 'THIN FILE' AND SegmentoScore = 24 AND SCORE_TD BETWEEN 228 AND 234  THEN 4          
+      WHEN BR_HIT_DES = 'THIN FILE' AND SegmentoScore = 24 AND SCORE_TD BETWEEN 235 AND 245  THEN 3          
+      WHEN BR_HIT_DES = 'THIN FILE' AND SegmentoScore = 24 AND SCORE_TD BETWEEN 246 AND 1000 THEN 2           
+      
+      WHEN BR_HIT_DES = 'NOHIT' AND SegmentoScore = 18 AND SCORE_TD BETWEEN 0   AND 213  THEN 5         
+      WHEN BR_HIT_DES = 'NOHIT' AND SegmentoScore = 18 AND SCORE_TD BETWEEN 214 AND 253  THEN 4             
+      WHEN BR_HIT_DES = 'NOHIT' AND SegmentoScore = 18 AND SCORE_TD BETWEEN 254 AND 262  THEN 3              
+      WHEN BR_HIT_DES = 'NOHIT' AND SegmentoScore = 18 AND SCORE_TD BETWEEN 263 AND 1000 THEN 2                        
+
+      WHEN BR_HIT_DES = 'NOHIT' AND SegmentoScore = 19 AND SCORE_TD BETWEEN 0   AND 226  THEN 5       
+      WHEN BR_HIT_DES = 'NOHIT' AND SegmentoScore = 19 AND SCORE_TD BETWEEN 227 AND 241  THEN 4           
+      WHEN BR_HIT_DES = 'NOHIT' AND SegmentoScore = 19 AND SCORE_TD BETWEEN 242 AND 1000 THEN 3                  
+
+      WHEN BR_HIT_DES = 'NOHIT' AND SegmentoScore = 20 AND SCORE_TD BETWEEN 0   AND 206  THEN 5       
+      WHEN BR_HIT_DES = 'NOHIT' AND SegmentoScore = 20 AND SCORE_TD BETWEEN 207 AND 233  THEN 4           
+      WHEN BR_HIT_DES = 'NOHIT' AND SegmentoScore = 20 AND SCORE_TD BETWEEN 234 AND 1000 THEN 3            
+    END AS RiskLevelMinipagos,
+  FROM SOLICITUDES
+),
+
+LINEAS AS (
+  SELECT
+    *,
+    LEAST(GREATEST(ROUND((BR_ING_TOT*GREATEST(PTIMaxMinipagos-PTI,0)*12)/500)*500,LCMinMinipagos),LCMaxMinipagos) AS LCMinipagos,
+  FROM (
+    SELECT
+      *,
+    CASE
+      WHEN BR_HIT_DES = 'HIT' THEN 2000
+      WHEN BR_HIT_DES = 'THIN FILE' THEN 1200
+      WHEN BR_HIT_DES = 'NOHIT' THEN 1200
+      ELSE 0 
+    END AS LCMinMinipagos,
+    CASE 
+      -- ThickRev
+      WHEN BR_HIT_DES = 'HIT' AND SegmentoScore = 22 AND RiskLevelMinipagos=1 THEN 17000
+      WHEN BR_HIT_DES = 'HIT' AND SegmentoScore = 22 AND RiskLevelMinipagos=2 THEN 15000
+      WHEN BR_HIT_DES = 'HIT' AND SegmentoScore = 22 AND RiskLevelMinipagos=3 THEN 13000
+      WHEN BR_HIT_DES = 'HIT' AND SegmentoScore = 22 AND RiskLevelMinipagos=4 THEN 08000
+      WHEN BR_HIT_DES = 'HIT' AND SegmentoScore = 22 AND RiskLevelMinipagos=5 THEN 06000
+      -- ThinRevAgeGE30
+      WHEN BR_HIT_DES = 'HIT' AND SegmentoScore = 23 AND RiskLevelMinipagos=1 THEN 14000
+      WHEN BR_HIT_DES = 'HIT' AND SegmentoScore = 23 AND RiskLevelMinipagos=2 THEN 11000
+      WHEN BR_HIT_DES = 'HIT' AND SegmentoScore = 23 AND RiskLevelMinipagos=3 THEN 08000
+      WHEN BR_HIT_DES = 'HIT' AND SegmentoScore = 23 AND RiskLevelMinipagos=4 THEN 06000
+      WHEN BR_HIT_DES = 'HIT' AND SegmentoScore = 23 AND RiskLevelMinipagos=5 THEN 04000
+      -- ThinRevAgeLT30
+      WHEN BR_HIT_DES = 'HIT' AND SegmentoScore = 24 AND RiskLevelMinipagos=1 THEN 11000
+      WHEN BR_HIT_DES = 'HIT' AND SegmentoScore = 24 AND RiskLevelMinipagos=2 THEN 09000
+      WHEN BR_HIT_DES = 'HIT' AND SegmentoScore = 24 AND RiskLevelMinipagos=3 THEN 06000
+      WHEN BR_HIT_DES = 'HIT' AND SegmentoScore = 24 AND RiskLevelMinipagos=4 THEN 04000
+      WHEN BR_HIT_DES = 'HIT' AND SegmentoScore = 24 AND RiskLevelMinipagos=5 THEN 03000
+      -- NewToRevolving
+      WHEN BR_HIT_DES = 'HIT' AND SegmentoScore = 21 AND RiskLevelMinipagos=1 THEN 09000
+      WHEN BR_HIT_DES = 'HIT' AND SegmentoScore = 21 AND RiskLevelMinipagos=2 THEN 07000
+      WHEN BR_HIT_DES = 'HIT' AND SegmentoScore = 21 AND RiskLevelMinipagos=3 THEN 05000
+      WHEN BR_HIT_DES = 'HIT' AND SegmentoScore = 21 AND RiskLevelMinipagos=4 THEN 03000
+      WHEN BR_HIT_DES = 'HIT' AND SegmentoScore = 21 AND RiskLevelMinipagos=5 THEN 02000
+      -- ThickRev
+      WHEN BR_HIT_DES = 'THIN FILE' AND SegmentoScore = 22 AND RiskLevelMinipagos=1 THEN 13000
+      WHEN BR_HIT_DES = 'THIN FILE' AND SegmentoScore = 22 AND RiskLevelMinipagos=2 THEN 11000
+      WHEN BR_HIT_DES = 'THIN FILE' AND SegmentoScore = 22 AND RiskLevelMinipagos=3 THEN 07000
+      WHEN BR_HIT_DES = 'THIN FILE' AND SegmentoScore = 22 AND RiskLevelMinipagos=4 THEN 04000
+      WHEN BR_HIT_DES = 'THIN FILE' AND SegmentoScore = 22 AND RiskLevelMinipagos=5 THEN 03000
+      -- ThinRevAgeGE30
+      WHEN BR_HIT_DES = 'THIN FILE' AND SegmentoScore = 23 AND RiskLevelMinipagos=1 THEN 11000
+      WHEN BR_HIT_DES = 'THIN FILE' AND SegmentoScore = 23 AND RiskLevelMinipagos=2 THEN 10000
+      WHEN BR_HIT_DES = 'THIN FILE' AND SegmentoScore = 23 AND RiskLevelMinipagos=3 THEN 06000
+      WHEN BR_HIT_DES = 'THIN FILE' AND SegmentoScore = 23 AND RiskLevelMinipagos=4 THEN 03000
+      WHEN BR_HIT_DES = 'THIN FILE' AND SegmentoScore = 23 AND RiskLevelMinipagos=5 THEN 02000
+      -- ThinRevAgeLT30
+      WHEN BR_HIT_DES = 'THIN FILE' AND SegmentoScore = 24 AND RiskLevelMinipagos=1 THEN 09000
+      WHEN BR_HIT_DES = 'THIN FILE' AND SegmentoScore = 24 AND RiskLevelMinipagos=2 THEN 08000
+      WHEN BR_HIT_DES = 'THIN FILE' AND SegmentoScore = 24 AND RiskLevelMinipagos=3 THEN 04000
+      WHEN BR_HIT_DES = 'THIN FILE' AND SegmentoScore = 24 AND RiskLevelMinipagos=4 THEN 02000
+      WHEN BR_HIT_DES = 'THIN FILE' AND SegmentoScore = 24 AND RiskLevelMinipagos=5 THEN 01200
+      -- NewToRevolving
+      WHEN BR_HIT_DES = 'THIN FILE' AND SegmentoScore = 21 AND RiskLevelMinipagos=1 THEN 08000
+      WHEN BR_HIT_DES = 'THIN FILE' AND SegmentoScore = 21 AND RiskLevelMinipagos=2 THEN 07000
+      WHEN BR_HIT_DES = 'THIN FILE' AND SegmentoScore = 21 AND RiskLevelMinipagos=3 THEN 03000
+      WHEN BR_HIT_DES = 'THIN FILE' AND SegmentoScore = 21 AND RiskLevelMinipagos=4 THEN 01200
+      WHEN BR_HIT_DES = 'THIN FILE' AND SegmentoScore = 21 AND RiskLevelMinipagos=5 THEN 01200
+      -- Rev
+      WHEN BR_HIT_DES = 'NOHIT' AND SegmentoScore = 18 AND RiskLevelMinipagos=1 THEN 07000
+      WHEN BR_HIT_DES = 'NOHIT' AND SegmentoScore = 18 AND RiskLevelMinipagos=2 THEN 06000
+      WHEN BR_HIT_DES = 'NOHIT' AND SegmentoScore = 18 AND RiskLevelMinipagos=3 THEN 03000
+      WHEN BR_HIT_DES = 'NOHIT' AND SegmentoScore = 18 AND RiskLevelMinipagos=4 THEN 02000
+      WHEN BR_HIT_DES = 'NOHIT' AND SegmentoScore = 18 AND RiskLevelMinipagos=5 THEN 01200
+      -- NRevAgeLT30
+      WHEN BR_HIT_DES = 'NOHIT' AND SegmentoScore = 20 AND RiskLevelMinipagos=1 THEN 05000
+      WHEN BR_HIT_DES = 'NOHIT' AND SegmentoScore = 20 AND RiskLevelMinipagos=2 THEN 04000
+      WHEN BR_HIT_DES = 'NOHIT' AND SegmentoScore = 20 AND RiskLevelMinipagos=3 THEN 01200
+      WHEN BR_HIT_DES = 'NOHIT' AND SegmentoScore = 20 AND RiskLevelMinipagos=4 THEN 01200
+      WHEN BR_HIT_DES = 'NOHIT' AND SegmentoScore = 20 AND RiskLevelMinipagos=5 THEN 01200
+      -- NRevAgeGE30
+      WHEN BR_HIT_DES = 'NOHIT' AND SegmentoScore = 19 AND RiskLevelMinipagos=1 THEN 04000
+      WHEN BR_HIT_DES = 'NOHIT' AND SegmentoScore = 19 AND RiskLevelMinipagos=2 THEN 03000
+      WHEN BR_HIT_DES = 'NOHIT' AND SegmentoScore = 19 AND RiskLevelMinipagos=3 THEN 02000
+      WHEN BR_HIT_DES = 'NOHIT' AND SegmentoScore = 19 AND RiskLevelMinipagos=4 THEN 01200
+      WHEN BR_HIT_DES = 'NOHIT' AND SegmentoScore = 19 AND RiskLevelMinipagos=5 THEN 01200
+      ELSE 0
+    END AS LCMaxMinipagos,
+    CASE 
+      -- ThickRev
+      WHEN BR_HIT_DES = 'HIT' AND SegmentoScore = 22 AND RiskLevelMinipagos=1 THEN 0.50
+      WHEN BR_HIT_DES = 'HIT' AND SegmentoScore = 22 AND RiskLevelMinipagos=2 THEN 0.45
+      WHEN BR_HIT_DES = 'HIT' AND SegmentoScore = 22 AND RiskLevelMinipagos=3 THEN 0.40
+      WHEN BR_HIT_DES = 'HIT' AND SegmentoScore = 22 AND RiskLevelMinipagos=4 THEN 0.35
+      WHEN BR_HIT_DES = 'HIT' AND SegmentoScore = 22 AND RiskLevelMinipagos=5 THEN 0.30
+      -- ThinRevAgeGE30
+      WHEN BR_HIT_DES = 'HIT' AND SegmentoScore = 23 AND RiskLevelMinipagos=1 THEN 0.45
+      WHEN BR_HIT_DES = 'HIT' AND SegmentoScore = 23 AND RiskLevelMinipagos=2 THEN 0.40
+      WHEN BR_HIT_DES = 'HIT' AND SegmentoScore = 23 AND RiskLevelMinipagos=3 THEN 0.35
+      WHEN BR_HIT_DES = 'HIT' AND SegmentoScore = 23 AND RiskLevelMinipagos=4 THEN 0.30
+      WHEN BR_HIT_DES = 'HIT' AND SegmentoScore = 23 AND RiskLevelMinipagos=5 THEN 0.25
+      -- ThinRevAgeLT30
+      WHEN BR_HIT_DES = 'HIT' AND SegmentoScore = 24 AND RiskLevelMinipagos=1 THEN 0.40
+      WHEN BR_HIT_DES = 'HIT' AND SegmentoScore = 24 AND RiskLevelMinipagos=2 THEN 0.35
+      WHEN BR_HIT_DES = 'HIT' AND SegmentoScore = 24 AND RiskLevelMinipagos=3 THEN 0.30
+      WHEN BR_HIT_DES = 'HIT' AND SegmentoScore = 24 AND RiskLevelMinipagos=4 THEN 0.25
+      WHEN BR_HIT_DES = 'HIT' AND SegmentoScore = 24 AND RiskLevelMinipagos=5 THEN 0.20
+      -- NewToRevolving
+      WHEN BR_HIT_DES = 'HIT' AND SegmentoScore = 21 AND RiskLevelMinipagos=1 THEN 0.35
+      WHEN BR_HIT_DES = 'HIT' AND SegmentoScore = 21 AND RiskLevelMinipagos=2 THEN 0.30
+      WHEN BR_HIT_DES = 'HIT' AND SegmentoScore = 21 AND RiskLevelMinipagos=3 THEN 0.25
+      WHEN BR_HIT_DES = 'HIT' AND SegmentoScore = 21 AND RiskLevelMinipagos=4 THEN 0.20
+      WHEN BR_HIT_DES = 'HIT' AND SegmentoScore = 21 AND RiskLevelMinipagos=5 THEN 0.15
+      -- ThickRev
+      WHEN BR_HIT_DES = 'THIN FILE' AND SegmentoScore = 22 AND RiskLevelMinipagos=1 THEN 0.40
+      WHEN BR_HIT_DES = 'THIN FILE' AND SegmentoScore = 22 AND RiskLevelMinipagos=2 THEN 0.35
+      WHEN BR_HIT_DES = 'THIN FILE' AND SegmentoScore = 22 AND RiskLevelMinipagos=3 THEN 0.30
+      WHEN BR_HIT_DES = 'THIN FILE' AND SegmentoScore = 22 AND RiskLevelMinipagos=4 THEN 0.25
+      WHEN BR_HIT_DES = 'THIN FILE' AND SegmentoScore = 22 AND RiskLevelMinipagos=5 THEN 0.20
+      -- ThinRevAgeGE30
+      WHEN BR_HIT_DES = 'THIN FILE' AND SegmentoScore = 23 AND RiskLevelMinipagos=1 THEN 0.35
+      WHEN BR_HIT_DES = 'THIN FILE' AND SegmentoScore = 23 AND RiskLevelMinipagos=2 THEN 0.30
+      WHEN BR_HIT_DES = 'THIN FILE' AND SegmentoScore = 23 AND RiskLevelMinipagos=3 THEN 0.25
+      WHEN BR_HIT_DES = 'THIN FILE' AND SegmentoScore = 23 AND RiskLevelMinipagos=4 THEN 0.20
+      WHEN BR_HIT_DES = 'THIN FILE' AND SegmentoScore = 23 AND RiskLevelMinipagos=5 THEN 0.15
+      -- ThinRevAgeLT30
+      WHEN BR_HIT_DES = 'THIN FILE' AND SegmentoScore = 24 AND RiskLevelMinipagos=1 THEN 0.30
+      WHEN BR_HIT_DES = 'THIN FILE' AND SegmentoScore = 24 AND RiskLevelMinipagos=2 THEN 0.25
+      WHEN BR_HIT_DES = 'THIN FILE' AND SegmentoScore = 24 AND RiskLevelMinipagos=3 THEN 0.20
+      WHEN BR_HIT_DES = 'THIN FILE' AND SegmentoScore = 24 AND RiskLevelMinipagos=4 THEN 0.15
+      WHEN BR_HIT_DES = 'THIN FILE' AND SegmentoScore = 24 AND RiskLevelMinipagos=5 THEN 0.10
+      -- NewToRevolving
+      WHEN BR_HIT_DES = 'THIN FILE' AND SegmentoScore = 21 AND RiskLevelMinipagos=1 THEN 0.25
+      WHEN BR_HIT_DES = 'THIN FILE' AND SegmentoScore = 21 AND RiskLevelMinipagos=2 THEN 0.20
+      WHEN BR_HIT_DES = 'THIN FILE' AND SegmentoScore = 21 AND RiskLevelMinipagos=3 THEN 0.15
+      WHEN BR_HIT_DES = 'THIN FILE' AND SegmentoScore = 21 AND RiskLevelMinipagos=4 THEN 0.10
+      WHEN BR_HIT_DES = 'THIN FILE' AND SegmentoScore = 21 AND RiskLevelMinipagos=5 THEN 0.10
+      -- Rev
+      WHEN BR_HIT_DES = 'NOHIT' AND SegmentoScore = 18 AND RiskLevelMinipagos=1 THEN 0.30
+      WHEN BR_HIT_DES = 'NOHIT' AND SegmentoScore = 18 AND RiskLevelMinipagos=2 THEN 0.25
+      WHEN BR_HIT_DES = 'NOHIT' AND SegmentoScore = 18 AND RiskLevelMinipagos=3 THEN 0.20
+      WHEN BR_HIT_DES = 'NOHIT' AND SegmentoScore = 18 AND RiskLevelMinipagos=4 THEN 0.15
+      WHEN BR_HIT_DES = 'NOHIT' AND SegmentoScore = 18 AND RiskLevelMinipagos=5 THEN 0.10
+      -- NRevAgeLT30
+      WHEN BR_HIT_DES = 'NOHIT' AND SegmentoScore = 20 AND RiskLevelMinipagos=1 THEN 0.25
+      WHEN BR_HIT_DES = 'NOHIT' AND SegmentoScore = 20 AND RiskLevelMinipagos=2 THEN 0.20
+      WHEN BR_HIT_DES = 'NOHIT' AND SegmentoScore = 20 AND RiskLevelMinipagos=3 THEN 0.15
+      WHEN BR_HIT_DES = 'NOHIT' AND SegmentoScore = 20 AND RiskLevelMinipagos=4 THEN 0.10
+      WHEN BR_HIT_DES = 'NOHIT' AND SegmentoScore = 20 AND RiskLevelMinipagos=5 THEN 0.10
+      -- NRevAgeGE30
+      WHEN BR_HIT_DES = 'NOHIT' AND SegmentoScore = 19 AND RiskLevelMinipagos=1 THEN 0.20
+      WHEN BR_HIT_DES = 'NOHIT' AND SegmentoScore = 19 AND RiskLevelMinipagos=2 THEN 0.15
+      WHEN BR_HIT_DES = 'NOHIT' AND SegmentoScore = 19 AND RiskLevelMinipagos=3 THEN 0.10
+      WHEN BR_HIT_DES = 'NOHIT' AND SegmentoScore = 19 AND RiskLevelMinipagos=4 THEN 0.10
+      WHEN BR_HIT_DES = 'NOHIT' AND SegmentoScore = 19 AND RiskLevelMinipagos=5 THEN 0.10
+      ELSE 0
+    END AS PTIMaxMinipagos,
+    FROM NIVEL_RIESGO
+  )
+),
+
+------------------------ MORAS --------------------------
+
+VFAC_SDO_CTA_MES AS (
+  SELECT 
+      a.CTA_CVE,
+      a.CTA_NIV_MOR,
+      a.CTA_SDO_ACT,
+      b.CTA_FCH_ALTA,
+      a.CTA_EDO_CVE,
+      a.CTA_IMP_LIM_CRD,
+      DATE(a.ANIO, a.MES, 1) AS MES_OBS,
+      DATE_DIFF(DATE(a.ANIO, a.MES, 1), DATE_TRUNC(b.CTA_FCH_ALTA, MONTH), MONTH) AS MOB
+  FROM `crp-pro-dwh-semanticagold.EIL_DP_VDWH.VFAC_SDO_CTA_MES` a
+  LEFT JOIN `crp-pro-dwh-semanticagold.EIL_DP_VDWH.VDIM_CTA` b
+    USING (CTA_CVE)
+  WHERE a.TIP_INF = 230
+    AND DATE(a.ANIO, a.MES, 1) >= DATE_TRUNC(FCH_INI, MONTH)
+    AND DATE(a.ANIO, a.MES, 1) >= '2026-01-01'
+    AND a.CTA_EDO_CVE NOT IN ('T', 'P', 'Z', '8', '9')
+),
+
+--  Moras
+MORAS AS (
+  SELECT
+      CTA_CVE,
+      MAX(CASE WHEN MES_OBS = DATE_TRUNC(CTA_FCH_ALTA, MONTH) THEN CTA_IMP_LIM_CRD ELSE 0 END) AS CTA_IMP_LIM_CRD,
+      MAX(CASE WHEN MES_OBS = DATE_TRUNC(CTA_FCH_ALTA, MONTH) THEN CTA_FCH_ALTA ELSE '1900-01-01' END) AS CTA_FCH_ALTA,
+      MAX(CASE WHEN MOB <= 12 AND CTA_NIV_MOR >= 3 THEN 1 ELSE 0 END) AS EVER_30_12M,  -- TARGET
+
+      MAX(CASE WHEN MOB = 2 THEN 1 ELSE 0 END) AS CTA_TOT_2M,
+      MAX(CASE WHEN MOB = 2 THEN CTA_SDO_ACT ELSE 0 END) AS SDO_TOT_2M,
+      MAX(CASE WHEN MOB = 2 AND CTA_NIV_MOR >= 2 THEN 1 ELSE 0 END) AS CTA_ENTRY_2M,
+      MAX(CASE WHEN MOB = 2 AND CTA_NIV_MOR >= 2 THEN CTA_SDO_ACT ELSE 0 END) AS SDO_ENTRY_2M,
+
+      MAX(CASE WHEN MOB = 3 THEN 1 ELSE 0 END) AS CTA_TOT_3M,
+      MAX(CASE WHEN MOB = 3 THEN CTA_SDO_ACT ELSE 0 END) AS SDO_TOT_3M,
+      MAX(CASE WHEN MOB = 3 AND CTA_NIV_MOR >= 3 THEN 1 ELSE 0 END) AS CTA_30_3M,
+      MAX(CASE WHEN MOB = 3 AND CTA_NIV_MOR >= 3 THEN CTA_SDO_ACT ELSE 0 END) AS SDO_30_3M,
+
+      MAX(CASE WHEN MOB = 6 THEN 1 ELSE 0 END) AS CTA_TOT_6M,
+      MAX(CASE WHEN MOB = 6 THEN CTA_SDO_ACT ELSE 0 END) AS SDO_TOT_6M,
+      MAX(CASE WHEN MOB = 6 AND CTA_NIV_MOR >= 3 THEN 1 ELSE 0 END) AS CTA_30_6M,
+      MAX(CASE WHEN MOB = 6 AND CTA_NIV_MOR >= 3 THEN CTA_SDO_ACT ELSE 0 END) AS SDO_30_6M,
+
+      MAX(CASE WHEN MOB = 9 THEN 1 ELSE 0 END) AS CTA_TOT_9M,
+      MAX(CASE WHEN MOB = 9 THEN CTA_SDO_ACT ELSE 0 END) AS SDO_TOT_9M,
+      MAX(CASE WHEN MOB = 9 AND CTA_NIV_MOR >= 5 THEN 1 ELSE 0 END) AS CTA_90_9M,
+      MAX(CASE WHEN MOB = 9 AND CTA_NIV_MOR >= 5 THEN CTA_SDO_ACT ELSE 0 END) AS SDO_90_9M,
+
+      MAX(CASE WHEN MOB = 12 THEN 1 ELSE 0 END) AS CTA_TOT_12M,
+      MAX(CASE WHEN MOB = 12 THEN CTA_SDO_ACT ELSE 0 END) AS SDO_TOT_12M,
+      MAX(CASE WHEN MOB = 12 AND CTA_NIV_MOR >= 5 THEN 1 ELSE 0 END) AS CTA_90_12M,
+      MAX(CASE WHEN MOB = 12 AND CTA_NIV_MOR >= 5 THEN CTA_SDO_ACT ELSE 0 END) AS SDO_90_12M
+  FROM VFAC_SDO_CTA_MES
+  GROUP BY 1
+),
+
+-- SDO promedio
+CALC_SDO_PROM AS (
+  SELECT 
+    a.BR_HIT_DES,
+    a.SegmentoScore, 
+    a.RiskLevelMinipagos,
+    a.LCMinipagos,
+    a.ScoreRank,
+    
+    CASE WHEN SUM(CTA_TOT_2M) > 0 THEN SUM(CTA_ENTRY_2M)/SUM(CTA_TOT_2M) ELSE 0 END AS BR_CTA_ENTRY_2M,
+    CASE WHEN SUM(CTA_TOT_3M) > 0 THEN SUM(CTA_30_3M)/SUM(CTA_TOT_3M) ELSE 0 END AS BR_CTA_30_3M,
+    CASE WHEN SUM(CTA_TOT_6M) > 0 THEN SUM(CTA_30_6M)/SUM(CTA_TOT_6M) ELSE 0 END AS BR_CTA_30_6M,
+    CASE WHEN SUM(CTA_TOT_9M) > 0 THEN SUM(CTA_90_9M)/SUM(CTA_TOT_9M) ELSE 0 END AS BR_CTA_90_9M,
+    
+    AVG(b.SDO_ENTRY_2M/b.CTA_IMP_LIM_CRD) AS AVG_UTIL_ENTRY_2M,
+    AVG(b.SDO_TOT_2M/b.CTA_IMP_LIM_CRD)   AS AVG_UTIL_TOT_2M,
+    AVG(b.SDO_TOT_3M/b.CTA_IMP_LIM_CRD)   AS AVG_UTIL_TOT_3M,
+    AVG(b.SDO_30_3M/b.CTA_IMP_LIM_CRD)    AS AVG_UTIL_30_3M,
+    AVG(b.SDO_TOT_6M/b.CTA_IMP_LIM_CRD)   AS AVG_UTIL_TOT_6M,
+    AVG(b.SDO_30_6M/b.CTA_IMP_LIM_CRD)    AS AVG_UTIL_30_6M,
+    AVG(b.SDO_TOT_9M/b.CTA_IMP_LIM_CRD)   AS AVG_UTIL_TOT_9M,
+    AVG(b.SDO_90_9M/b.CTA_IMP_LIM_CRD)    AS AVG_UTIL_90_9M,
+    AVG(b.SDO_TOT_12M/b.CTA_IMP_LIM_CRD)  AS AVG_UTIL_TOT_12M,
+    AVG(b.SDO_90_12M/b.CTA_IMP_LIM_CRD)   AS AVG_UTIL_90_12M
+  
+  FROM LINEAS a
+  JOIN MORAS b
+  ON a.CTA_CVE = b.CTA_CVE
+  WHERE b.CTA_CVE > 0 AND b.CTA_IMP_LIM_CRD > 0
+  GROUP BY 1,2,3,4,5
+),
+
+CONSOLIDADO AS (
+  SELECT
+     a.*,
+
+     c.CTA_IMP_LIM_CRD,
+     c.CTA_FCH_ALTA,
+     c.EVER_30_12M,
+     c.SDO_TOT_2M,
+     c.SDO_ENTRY_2M,
+     c.SDO_TOT_3M,
+     c.SDO_30_3M,
+     c.SDO_TOT_6M,
+     c.SDO_30_6M,
+     c.SDO_TOT_9M,
+     c.SDO_90_9M,
+
+     b.AVG_UTIL_ENTRY_2M,
+     b.AVG_UTIL_TOT_2M,
+     b.AVG_UTIL_TOT_3M,
+     b.AVG_UTIL_30_3M,
+     b.AVG_UTIL_TOT_6M,
+     b.AVG_UTIL_30_6M,
+     b.AVG_UTIL_TOT_9M,
+     b.AVG_UTIL_90_9M,
+     b.AVG_UTIL_TOT_12M,
+     b.AVG_UTIL_90_12M,
+     
+     b.BR_CTA_ENTRY_2M,
+     b.BR_CTA_30_3M,
+     b.BR_CTA_30_6M,
+     b.BR_CTA_90_9M,
+
+  FROM LINEAS a
+  LEFT JOIN MORAS c
+    ON c.CTA_CVE = a.CTA_CVE
+  LEFT JOIN CALC_SDO_PROM b
+    ON b.BR_HIT_DES = a.BR_HIT_DES
+   AND b.SegmentoScore = a.SegmentoScore
+   AND b.RiskLevelMinipagos = a.RiskLevelMinipagos
+   AND a.LCMinipagos = b.LCMinipagos
+   AND a.ScoreRank = b.ScoreRank
+),
+
+NUEVAS_MORAS AS (
+  SELECT
+     *,
+     DATE_TRUNC(CTA_FCH_ALTA, MONTH) AS COSECHA,
+     CASE WHEN CTA_IMP_LIM_CRD > 0 THEN (SDO_TOT_2M/CTA_IMP_LIM_CRD)*LCMinipagos ELSE AVG_UTIL_TOT_2M*LCMinipagos END AS SDO_TOT_2M_NEW,
+     CASE WHEN CTA_IMP_LIM_CRD > 0 THEN (SDO_ENTRY_2M/CTA_IMP_LIM_CRD)*LCMinipagos ELSE AVG_UTIL_ENTRY_2M*LCMinipagos*BR_CTA_ENTRY_2M END AS SDO_ENTRY_2M_NEW,
+     CASE WHEN CTA_IMP_LIM_CRD > 0 THEN (SDO_TOT_3M/CTA_IMP_LIM_CRD)*LCMinipagos ELSE AVG_UTIL_TOT_3M*LCMinipagos END AS SDO_TOT_3M_NEW,
+     CASE WHEN CTA_IMP_LIM_CRD > 0 THEN (SDO_30_3M/CTA_IMP_LIM_CRD)*LCMinipagos ELSE AVG_UTIL_30_3M*LCMinipagos*BR_CTA_30_3M END AS SDO_30_3M_NEW,
+     CASE WHEN CTA_IMP_LIM_CRD > 0 THEN (SDO_TOT_6M/CTA_IMP_LIM_CRD)*LCMinipagos ELSE AVG_UTIL_TOT_6M*LCMinipagos END AS SDO_TOT_6M_NEW,
+     CASE WHEN CTA_IMP_LIM_CRD > 0 THEN (SDO_30_6M/CTA_IMP_LIM_CRD)*LCMinipagos ELSE AVG_UTIL_30_6M*LCMinipagos*BR_CTA_30_6M END AS SDO_30_6M_NEW,
+     CASE WHEN CTA_IMP_LIM_CRD > 0 THEN (SDO_TOT_9M/CTA_IMP_LIM_CRD)*LCMinipagos ELSE AVG_UTIL_TOT_9M*LCMinipagos END AS SDO_TOT_9M_NEW,
+     CASE WHEN CTA_IMP_LIM_CRD > 0 THEN (SDO_90_9M/CTA_IMP_LIM_CRD)*LCMinipagos ELSE AVG_UTIL_90_9M*LCMinipagos*BR_CTA_90_9M END AS SDO_90_9M_NEW
+  FROM CONSOLIDADO
+)
+
+-- INPUT
+SELECT 
+  DATE_TRUNC(BR_FCH_APE, MONTH) AS MES,
+  BR_HIT_DES,
+  SegmentoScore,
+  ScoreRank,
+  CANAL,
+  TRAMITE,
+  COUNT(*) AS Solicitudes,
+  SUM(CASE WHEN CTA_CVE > 0 THEN 1 ELSE 0 END) AS Cuentas,
+  SUM(CASE WHEN BR_REGLA_DES IN ('RL_SCOREINSUFICIENTE','RL_MOP5_6M') AND PTI <= 0.5 AND TL_SDO_MOP5_CTAS_VAL_24M = 0 THEN 1 ELSE 0 END) AS SWAP_IN,
+  SUM(SDO_TOT_2M_NEW)   AS SDO_TOT_2M_NEW,
+  SUM(SDO_ENTRY_2M_NEW) AS SDO_ENTRY_2M_NEW,
+  SUM(SDO_TOT_3M_NEW)   AS SDO_TOT_3M_NEW,
+  SUM(SDO_30_3M_NEW)    AS SDO_30_3M_NEW,
+  SUM(SDO_TOT_6M_NEW)   AS SDO_TOT_6M_NEW,
+  SUM(SDO_30_6M_NEW)    AS SDO_30_6M_NEW,
+  SUM(SDO_TOT_9M_NEW)   AS SDO_TOT_9M_NEW,
+  SUM(SDO_90_9M_NEW)    AS SDO_90_9M_NEW,
+
+  SUM(SDO_TOT_2M)   AS SDO_TOT_2M_ACT,
+  SUM(SDO_ENTRY_2M) AS SDO_ENTRY_2M_ACT,
+  SUM(SDO_TOT_3M)   AS SDO_TOT_3M_ACT,
+  SUM(SDO_30_3M)    AS SDO_30_3M_ACT,
+  SUM(SDO_TOT_6M)   AS SDO_TOT_6M_ACT,
+  SUM(SDO_30_6M)    AS SDO_30_6M_ACT,
+  SUM(SDO_TOT_9M)   AS SDO_TOT_9M_ACT,
+  SUM(SDO_90_9M)    AS SDO_90_9M_ACT,
+FROM NUEVAS_MORAS
+GROUP BY 1,2,3,4,5,6
